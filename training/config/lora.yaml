@@ -1,0 +1,22 @@
+model:
+  base: codellama/CodeLlama-7b-hf
+dataset:
+  name: json
+  split: train
+  max_length: 1024
+  data_files: training/data/lora.jsonl
+lora:
+  rank: 16
+  alpha: 32
+  target_modules:
+    - q_proj
+    - v_proj
+  dropout: 0.05
+training:
+  batch_size: 4
+  epochs: 3
+  learning_rate: 0.0003
+  logging_steps: 20
+  save_steps: 200
+output:
+  dir: checkpoints/lora

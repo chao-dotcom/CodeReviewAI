@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.models import (
+    AgentInfo,
+    AgentTrace,
+    Comment,
+    FeedbackEntry,
+    FeedbackSummary,
+    FeedbackRequest,
+    PreferencePair,
+    RagIndexRequest,
+    RagRepoIndexRequest,
+    RagSearchRequest,
+    ReviewRequest,
+    ReviewResult,
+    ReviewStatus,
+)
+from app.auth import require_api_key
+from app.config import settings
+from app.pipeline.review import AGENTS, run_review_pipeline
+from app.queue import ReviewJob, ReviewQueue
+from app.rag.index import RagChunk
+from app.rag.service import RagService
+from app.rag.builder import build_chunks
+from app.storage import InMemoryStore
+from app.storage_sql import SqlStore
+from app.webhooks import verify_github_signature, verify_gitlab_token
+
+
+app = FastAPI(title="Agentic Code Review API", version="0.1.0")
+store = SqlStore(settings.database_url) if settings.use_database else InMemoryStore()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def start_workers() -> None:
+    app.state.queue = ReviewQueue()
+    app.state.rag_index = RagService()
+
+    if not settings.use_celery:
+        async def handle_job(job: ReviewJob) -> None:
+            store.mark_in_progress(job.review_id)
+            try:
+                comments, traces = run_review_pipeline(
+                    job.review_id, job.diff_text, rag_index=app.state.rag_index
+                )
+                store.add_comments(job.review_id, comments)
+                store.add_traces(job.review_id, traces)
+                store.complete_review(job.review_id)
+            except Exception as exc:
+                store.mark_failed(job.review_id, str(exc))
+
+        await app.state.queue.start(handle_job)
+
+
+@app.post("/api/reviews", response_model=ReviewResult)
+async def create_review(request: ReviewRequest) -> ReviewResult:
+    review = store.create_review(
+        metadata={"repo": request.repo, "commit": request.commit, "diff": request.diff}
+    )
+    if settings.use_celery:
+        from app.tasks import process_review
+
+        process_review.delay(str(review.id), request.diff)
+    else:
+        await app.state.queue.enqueue(ReviewJob(review_id=review.id, diff_text=request.diff))
+    return store.get_result(review.id)
+
+
+@app.get("/api/reviews/{review_id}", response_model=ReviewStatus)
+def get_review_status(review_id: UUID) -> ReviewStatus:
+    try:
+        return store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+
+@app.get("/api/reviews", response_model=list[ReviewStatus])
+def list_reviews() -> list[ReviewStatus]:
+    return store.list_reviews()
+
+
+@app.get("/api/reviews/{review_id}/comments", response_model=list[Comment])
+def get_review_comments(review_id: UUID) -> list[Comment]:
+    try:
+        return store.get_comments(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+
+@app.post("/api/reviews/{review_id}/feedback")
+def submit_feedback(review_id: UUID, feedback: FeedbackRequest) -> dict:
+    try:
+        store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+    entry = FeedbackEntry(
+        id=uuid4(),
+        review_id=review_id,
+        comment_id=feedback.comment_id,
+        rating=feedback.rating,
+        user_id=feedback.user_id,
+        created_at=datetime.utcnow(),
+    )
+    store.add_feedback(entry)
+    return {"status": "received", "comment_id": str(feedback.comment_id), "rating": feedback.rating}
+
+
+@app.get("/api/reviews/{review_id}/feedback", response_model=list[FeedbackEntry])
+def list_feedback(review_id: UUID) -> list[FeedbackEntry]:
+    try:
+        store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return store.list_feedback(review_id)
+
+
+@app.get("/api/reviews/{review_id}/feedback/summary", response_model=FeedbackSummary)
+def feedback_summary(review_id: UUID) -> FeedbackSummary:
+    try:
+        store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+    summary = store.feedback_summary(review_id)
+    return FeedbackSummary(review_id=review_id, **summary)
+
+
+def _build_preferences(review_id: UUID, limit: int) -> list[PreferencePair]:
+    feedback = store.list_feedback(review_id)
+    if not feedback:
+        return []
+
+    latest_by_comment: dict[UUID, FeedbackEntry] = {}
+    for entry in sorted(feedback, key=lambda item: item.created_at):
+        latest_by_comment[entry.comment_id] = entry
+
+    comments_by_id = {comment.id: comment for comment in store.get_comments(review_id)}
+    positive = [comments_by_id[cid] for cid, entry in latest_by_comment.items() if entry.rating > 0 and cid in comments_by_id]
+    negative = [comments_by_id[cid] for cid, entry in latest_by_comment.items() if entry.rating < 0 and cid in comments_by_id]
+
+    if not positive or not negative:
+        return []
+
+    diff_text = store.get_review(review_id).metadata.get("diff", "")
+    prompt = f"Review this code diff:\n\n{diff_text}".strip()
+
+    pairs: list[PreferencePair] = []
+    for pos in positive:
+        for neg in negative:
+            pairs.append(
+                PreferencePair(
+                    review_id=review_id,
+                    prompt=prompt,
+                    chosen=pos.content,
+                    rejected=neg.content,
+                )
+            )
+            if len(pairs) >= limit:
+                return pairs
+
+    return pairs
+
+
+@app.get("/api/reviews/{review_id}/preferences", response_model=list[PreferencePair])
+def export_preferences(review_id: UUID, limit: int = 20) -> list[PreferencePair]:
+    try:
+        store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return _build_preferences(review_id, limit)
+
+
+@app.get("/api/preferences", response_model=list[PreferencePair])
+def export_all_preferences(limit: int = 200) -> list[PreferencePair]:
+    pairs: list[PreferencePair] = []
+    for review in store.list_reviews():
+        pairs.extend(_build_preferences(review.id, limit))
+        if len(pairs) >= limit:
+            return pairs[:limit]
+    return pairs
+
+
+@app.delete("/api/reset")
+def reset_store(_user: str = Depends(require_api_key)) -> dict:
+    if isinstance(store, InMemoryStore):
+        store.reviews.clear()
+        store.comments.clear()
+        store.traces.clear()
+        store.feedback.clear()
+        app.state.rag_index = RagService()
+        return {"status": "reset"}
+    raise HTTPException(status_code=400, detail="Reset only supported for in-memory store")
+
+
+@app.get("/api/agents", response_model=list[AgentInfo])
+def list_agents() -> list[AgentInfo]:
+    return [AgentInfo(**agent) for agent in AGENTS]
+
+
+@app.get("/api/agents/{agent_id}/trace", response_model=list[AgentTrace])
+def get_agent_trace(agent_id: str) -> list[AgentTrace]:
+    return store.list_traces_by_agent(agent_id)
+
+
+@app.post("/api/rag/index")
+def index_rag(request: RagIndexRequest) -> dict:
+    chunks = [RagChunk(chunk_id=chunk.chunk_id, content=chunk.content, metadata=chunk.metadata) for chunk in request.chunks]
+    app.state.rag_index.add_chunks(chunks)
+    return {"status": "indexed", "count": len(chunks)}
+
+
+@app.post("/api/rag/index/repo")
+def index_rag_repo(request: RagRepoIndexRequest) -> dict:
+    try:
+        chunks = build_chunks(request.repo_path, request.include_globs)
+        app.state.rag_index.add_chunks(chunks)
+        count = len(chunks)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "indexed", "count": count}
+
+
+@app.post("/api/rag/search")
+def search_rag(request: RagSearchRequest) -> list[dict]:
+    results = app.state.rag_index.query(request.query, limit=request.limit)
+    return [{"chunk_id": chunk.chunk_id, "content": chunk.content, "metadata": chunk.metadata} for chunk in results]
+
+
+@app.get("/api/auth/github/login")
+def github_login() -> dict:
+    return {"url": "https://github.com/login/oauth/authorize", "state": "demo_state"}
+
+
+@app.get("/api/auth/github/callback")
+def github_callback(code: str, state: str) -> dict:
+    return {"status": "received", "code": code, "state": state}
+
+
+@app.post("/api/webhooks/github")
+async def github_webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(default=None),
+) -> dict:
+    payload = await request.body()
+    if not verify_github_signature(settings.github_webhook_secret, payload, x_hub_signature_256):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    return {"status": "accepted"}
+
+
+@app.post("/api/webhooks/gitlab")
+async def gitlab_webhook(
+    request: Request,
+    x_gitlab_token: str | None = Header(default=None),
+) -> dict:
+    payload = await request.body()
+    if not verify_gitlab_token(settings.gitlab_webhook_secret, x_gitlab_token):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return {"status": "accepted"}

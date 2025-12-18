@@ -1,0 +1,14 @@
+model:
+  base: codellama/CodeLlama-7b-hf
+dataset:
+  name: json
+  split: train
+  data_files: training/data/dpo.jsonl
+training:
+  beta: 0.1
+  batch_size: 4
+  epochs: 1
+  learning_rate: 0.0000005
+  logging_steps: 20
+output:
+  dir: checkpoints/dpo

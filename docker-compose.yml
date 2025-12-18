@@ -1,0 +1,51 @@
+version: "3.8"
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - USE_DATABASE=1
+      - USE_CELERY=1
+      - DATABASE_URL=postgresql://codereview:codereview@db:5432/codereview
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - USE_CHROMA=0
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build: .
+    command: celery -A app.celery_app.celery_app worker -Q reviews --loglevel=info
+    environment:
+      - USE_DATABASE=1
+      - USE_CELERY=1
+      - DATABASE_URL=postgresql://codereview:codereview@db:5432/codereview
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - USE_CHROMA=0
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=codereview
+      - POSTGRES_PASSWORD=codereview
+      - POSTGRES_DB=codereview
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"

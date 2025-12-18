@@ -15,6 +15,7 @@ import {
   getOAuthUrl,
   indexRepo,
   listReviews,
+  listOAuthTokens,
   resetStore,
   submitFeedback
 } from "./api";
@@ -37,6 +38,9 @@ const App = () => {
   const [resetStatus, setResetStatus] = useState<string | null>(null);
   const [showResetModal, setShowResetModal] = useState(false);
   const [authStatus, setAuthStatus] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<{ provider: "github" | "gitlab"; userId: string } | null>(null);
+  const [tokenCount, setTokenCount] = useState<number | null>(null);
+  const [tokenList, setTokenList] = useState<{ access_token: string; created_at: string }[]>([]);
 
   const refreshReviews = async () => {
     const data = await listReviews();
@@ -198,6 +202,21 @@ const App = () => {
     }
   };
 
+  const handleTokenLookup = async () => {
+    if (!authUser) {
+      setAuthStatus("Set provider and user id first");
+      return;
+    }
+    try {
+      const tokens = await listOAuthTokens(authUser.provider, authUser.userId);
+      setTokenCount(tokens.length);
+      setTokenList(tokens);
+      setAuthStatus(`Found ${tokens.length} tokens`);
+    } catch (error) {
+      setAuthStatus("Token lookup failed");
+    }
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -239,6 +258,53 @@ const App = () => {
               value={diffText}
               onChange={(event) => setDiffText(event.target.value)}
             />
+          </section>
+          <section className="card input-card">
+            <div className="card-header">
+              <h2>Connected Accounts</h2>
+              <span className="chip ghost">OAuth</span>
+            </div>
+            <div className="row">
+              <select
+                value={authUser?.provider ?? "github"}
+                onChange={(event) =>
+                  setAuthUser({
+                    provider: event.target.value as "github" | "gitlab",
+                    userId: authUser?.userId ?? ""
+                  })
+                }
+              >
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+              </select>
+              <input
+                type="text"
+                placeholder="User ID"
+                value={authUser?.userId ?? ""}
+                onChange={(event) =>
+                  setAuthUser({
+                    provider: authUser?.provider ?? "github",
+                    userId: event.target.value
+                  })
+                }
+              />
+              <button className="secondary" onClick={handleTokenLookup}>
+                Lookup Tokens
+              </button>
+            </div>
+            <span className="status">
+              {tokenCount === null ? "No lookup yet" : `${tokenCount} tokens stored`}
+            </span>
+            {tokenList.length > 0 ? (
+              <ul className="token-list">
+                {tokenList.map((token, index) => (
+                  <li key={`${token.created_at}-${index}`}>
+                    <span>{new Date(token.created_at).toLocaleString()}</span>
+                    <code>{token.access_token.slice(0, 6)}…</code>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </section>
           <section className="card input-card">
             <div className="card-header">

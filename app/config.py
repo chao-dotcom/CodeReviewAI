@@ -27,6 +27,10 @@ class Settings:
         self.gitlab_client_id = os.getenv("GITLAB_CLIENT_ID", "")
         self.gitlab_client_secret = os.getenv("GITLAB_CLIENT_SECRET", "")
         self.gitlab_redirect_uri = os.getenv("GITLAB_REDIRECT_URI", "")
+        self.llm_backend = os.getenv("LLM_BACKEND", "local")
+        self.llm_model = os.getenv("LLM_MODEL", "gpt2")
+        self.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "256"))
+        self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 
 
 settings = Settings()

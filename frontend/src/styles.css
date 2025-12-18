@@ -187,6 +187,30 @@ body {
   background: #fdfbf8;
 }
 
+.input-card select {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  background: #fdfbf8;
+  font-size: 13px;
+}
+
+.token-list {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.token-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface-alt);
+  font-size: 12px;
+}
+
 .row {
   display: flex;
   gap: 12px;

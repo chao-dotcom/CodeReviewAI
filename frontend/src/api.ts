@@ -83,3 +83,9 @@ export const resetStore = async (): Promise<{ status: string }> =>
 export const getOAuthUrl = async (
   provider: "github" | "gitlab"
 ): Promise<{ url: string }> => request(`/api/auth/${provider}/login`);
+
+export const listOAuthTokens = async (
+  provider: "github" | "gitlab",
+  userId: string
+): Promise<{ access_token: string; created_at: string }[]> =>
+  request(`/api/auth/tokens?provider=${provider}&user_id=${userId}`);

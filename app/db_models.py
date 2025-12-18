@@ -70,3 +70,13 @@ class FeedbackModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     review: Mapped["ReviewModel"] = relationship("ReviewModel", back_populates="feedback")
+
+
+class OAuthTokenModel(Base):
+    __tablename__ = "oauth_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List
 from uuid import UUID, uuid4
 
-from app.models import AgentTrace, Comment, FeedbackEntry, ReviewResult, ReviewStatus
+from app.models import AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
 
 
 class InMemoryStore:
@@ -13,6 +13,7 @@ class InMemoryStore:
         self.comments: Dict[UUID, List[Comment]] = {}
         self.traces: Dict[UUID, List[AgentTrace]] = {}
         self.feedback: Dict[UUID, List[FeedbackEntry]] = {}
+        self.tokens: List[OAuthToken] = []
 
     def create_review(self, metadata: dict | None = None) -> ReviewStatus:
         now = datetime.utcnow()
@@ -101,3 +102,9 @@ class InMemoryStore:
         for review_traces in self.traces.values():
             traces.extend([trace for trace in review_traces if trace.agent_id == agent_id])
         return traces
+
+    def add_oauth_token(self, token: OAuthToken) -> None:
+        self.tokens.append(token)
+
+    def list_oauth_tokens(self, provider: str, user_id: str) -> List[OAuthToken]:
+        return [t for t in self.tokens if t.provider == provider and t.user_id == user_id]

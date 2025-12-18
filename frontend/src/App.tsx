@@ -12,6 +12,7 @@ import {
   getAllPreferences,
   getPreferences,
   getReview,
+  getOAuthUrl,
   indexRepo,
   listReviews,
   resetStore,
@@ -35,6 +36,7 @@ const App = () => {
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [resetStatus, setResetStatus] = useState<string | null>(null);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [authStatus, setAuthStatus] = useState<string | null>(null);
 
   const refreshReviews = async () => {
     const data = await listReviews();
@@ -186,6 +188,16 @@ const App = () => {
     setShowResetModal(false);
   };
 
+  const handleOAuth = async (provider: "github" | "gitlab") => {
+    setAuthStatus(`Connecting ${provider}...`);
+    try {
+      const data = await getOAuthUrl(provider);
+      window.location.href = data.url;
+    } catch (error) {
+      setAuthStatus("OAuth failed");
+    }
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -194,6 +206,13 @@ const App = () => {
           <h1>Review orchestration for high-signal feedback</h1>
         </div>
         <div className="header-actions">
+          <button className="secondary" onClick={() => handleOAuth("github")}>
+            Connect GitHub
+          </button>
+          <button className="secondary" onClick={() => handleOAuth("gitlab")}>
+            Connect GitLab
+          </button>
+          <span className="status">{authStatus ?? ""}</span>
           <button className="secondary" onClick={handleReset}>
             Reset Demo
           </button>

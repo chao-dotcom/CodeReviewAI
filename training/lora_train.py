@@ -16,7 +16,11 @@ def load_config(path: str) -> dict:
 
 def main() -> None:
     config = load_config("training/config/lora.yaml")
-    dataset = load_dataset(config["dataset"]["name"], split=config["dataset"]["split"])
+    dataset = load_dataset(
+        config["dataset"]["name"],
+        data_files=config["dataset"].get("data_files"),
+        split=config["dataset"]["split"],
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["base"])
     model = AutoModelForCausalLM.from_pretrained(config["model"]["base"])
@@ -32,7 +36,11 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
 
     def tokenize(batch):
-        return tokenizer(batch["text"], truncation=True, max_length=config["dataset"]["max_length"])
+        return tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=config["dataset"]["max_length"],
+        )
 
     tokenized = dataset.map(tokenize, batched=True, remove_columns=dataset.column_names)
 

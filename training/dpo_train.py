@@ -16,7 +16,11 @@ def load_config(path: str) -> dict:
 
 def main() -> None:
     config = load_config("training/config/dpo.yaml")
-    dataset = load_dataset(config["dataset"]["name"], split=config["dataset"]["split"])
+    dataset = load_dataset(
+        config["dataset"]["name"],
+        data_files=config["dataset"].get("data_files"),
+        split=config["dataset"]["split"],
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["base"])
     model = AutoModelForCausalLM.from_pretrained(config["model"]["base"])

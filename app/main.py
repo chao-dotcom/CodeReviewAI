@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,6 +14,7 @@ from app.models import (
     FeedbackEntry,
     FeedbackSummary,
     FeedbackRequest,
+    OAuthToken,
     PreferencePair,
     RagIndexRequest,
     RagRepoIndexRequest,
@@ -30,6 +32,7 @@ from app.rag.service import RagService
 from app.rag.builder import build_chunks
 from app.storage import InMemoryStore
 from app.storage_sql import SqlStore
+from app.webhook_handlers import handle_github_webhook, handle_gitlab_webhook
 from app.webhooks import verify_github_signature, verify_gitlab_token
 
 
@@ -66,18 +69,22 @@ async def start_workers() -> None:
         await app.state.queue.start(handle_job)
 
 
-@app.post("/api/reviews", response_model=ReviewResult)
-async def create_review(request: ReviewRequest) -> ReviewResult:
-    review = store.create_review(
-        metadata={"repo": request.repo, "commit": request.commit, "diff": request.diff}
-    )
+async def enqueue_review(diff_text: str, metadata: dict) -> UUID:
+    review = store.create_review(metadata=metadata)
     if settings.use_celery:
         from app.tasks import process_review
 
-        process_review.delay(str(review.id), request.diff)
+        process_review.delay(str(review.id), diff_text)
     else:
-        await app.state.queue.enqueue(ReviewJob(review_id=review.id, diff_text=request.diff))
-    return store.get_result(review.id)
+        await app.state.queue.enqueue(ReviewJob(review_id=review.id, diff_text=diff_text))
+    return review.id
+
+
+@app.post("/api/reviews", response_model=ReviewResult)
+async def create_review(request: ReviewRequest) -> ReviewResult:
+    metadata = {"repo": request.repo, "commit": request.commit, "diff": request.diff}
+    review_id = await enqueue_review(request.diff, metadata)
+    return store.get_result(review_id)
 
 
 @app.get("/api/reviews/{review_id}", response_model=ReviewStatus)
@@ -210,6 +217,11 @@ def list_agents() -> list[AgentInfo]:
     return [AgentInfo(**agent) for agent in AGENTS]
 
 
+@app.get("/api/auth/tokens")
+def list_oauth_tokens(provider: str, user_id: str) -> list[OAuthToken]:
+    return store.list_oauth_tokens(provider, user_id)
+
+
 @app.get("/api/agents/{agent_id}/trace", response_model=list[AgentTrace])
 def get_agent_trace(agent_id: str) -> list[AgentTrace]:
     return store.list_traces_by_agent(agent_id)
@@ -241,12 +253,106 @@ def search_rag(request: RagSearchRequest) -> list[dict]:
 
 @app.get("/api/auth/github/login")
 def github_login() -> dict:
-    return {"url": "https://github.com/login/oauth/authorize", "state": "demo_state"}
+    params = {
+        "client_id": settings.github_client_id,
+        "redirect_uri": settings.github_redirect_uri,
+        "scope": "repo",
+        "state": "demo_state",
+    }
+    query = "&".join(f"{key}={value}" for key, value in params.items() if value)
+    return {"url": f"https://github.com/login/oauth/authorize?{query}", "state": "demo_state"}
 
 
 @app.get("/api/auth/github/callback")
 def github_callback(code: str, state: str) -> dict:
-    return {"status": "received", "code": code, "state": state}
+    if not settings.github_client_id or not settings.github_client_secret:
+        raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
+    token_response = requests.post(
+        "https://github.com/login/oauth/access_token",
+        headers={"Accept": "application/json"},
+        data={
+            "client_id": settings.github_client_id,
+            "client_secret": settings.github_client_secret,
+            "code": code,
+            "redirect_uri": settings.github_redirect_uri,
+            "state": state,
+        },
+        timeout=15,
+    )
+    token_response.raise_for_status()
+    token_payload = token_response.json()
+    access_token = token_payload.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Failed to exchange token")
+
+    user_response = requests.get(
+        "https://api.github.com/user",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    user_response.raise_for_status()
+    user = user_response.json()
+    store.add_oauth_token(
+        OAuthToken(
+            provider="github",
+            user_id=str(user.get("id")),
+            access_token=access_token,
+            created_at=datetime.utcnow(),
+        )
+    )
+    return {"status": "connected", "user": {"id": user.get("id"), "login": user.get("login")}}
+
+
+@app.get("/api/auth/gitlab/login")
+def gitlab_login() -> dict:
+    params = {
+        "client_id": settings.gitlab_client_id,
+        "redirect_uri": settings.gitlab_redirect_uri,
+        "response_type": "code",
+        "scope": "read_api",
+        "state": "demo_state",
+    }
+    query = "&".join(f"{key}={value}" for key, value in params.items() if value)
+    return {"url": f"https://gitlab.com/oauth/authorize?{query}", "state": "demo_state"}
+
+
+@app.get("/api/auth/gitlab/callback")
+def gitlab_callback(code: str, state: str) -> dict:
+    if not settings.gitlab_client_id or not settings.gitlab_client_secret:
+        raise HTTPException(status_code=400, detail="GitLab OAuth not configured")
+    token_response = requests.post(
+        "https://gitlab.com/oauth/token",
+        data={
+            "client_id": settings.gitlab_client_id,
+            "client_secret": settings.gitlab_client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": settings.gitlab_redirect_uri,
+        },
+        timeout=15,
+    )
+    token_response.raise_for_status()
+    token_payload = token_response.json()
+    access_token = token_payload.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Failed to exchange token")
+
+    user_response = requests.get(
+        "https://gitlab.com/api/v4/user",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    user_response.raise_for_status()
+    user = user_response.json()
+    store.add_oauth_token(
+        OAuthToken(
+            provider="gitlab",
+            user_id=str(user.get("id")),
+            access_token=access_token,
+            created_at=datetime.utcnow(),
+        )
+    )
+    return {"status": "connected", "user": {"id": user.get("id"), "username": user.get("username")}}
 
 
 @app.post("/api/webhooks/github")
@@ -257,7 +363,7 @@ async def github_webhook(
     payload = await request.body()
     if not verify_github_signature(settings.github_webhook_secret, payload, x_hub_signature_256):
         raise HTTPException(status_code=401, detail="Invalid signature")
-    return {"status": "accepted"}
+    return await handle_github_webhook(payload, enqueue_review)
 
 
 @app.post("/api/webhooks/gitlab")
@@ -268,4 +374,4 @@ async def gitlab_webhook(
     payload = await request.body()
     if not verify_gitlab_token(settings.gitlab_webhook_secret, x_gitlab_token):
         raise HTTPException(status_code=401, detail="Invalid token")
-    return {"status": "accepted"}
+    return await handle_gitlab_webhook(payload, enqueue_review)

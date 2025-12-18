@@ -66,6 +66,13 @@ class PreferencePair(BaseModel):
     rejected: str
 
 
+class OAuthToken(BaseModel):
+    provider: str
+    user_id: str
+    access_token: str
+    created_at: datetime
+
+
 class AgentInfo(BaseModel):
     id: str
     name: str

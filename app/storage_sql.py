@@ -7,8 +7,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 
 from app.db import build_engine, get_session, init_db
-from app.db_models import CommentModel, FeedbackModel, ReviewModel, TraceModel
-from app.models import AgentTrace, Comment, FeedbackEntry, ReviewResult, ReviewStatus
+from app.db_models import CommentModel, FeedbackModel, OAuthTokenModel, ReviewModel, TraceModel
+from app.models import AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
 
 
 class SqlStore:
@@ -224,6 +224,40 @@ class SqlStore:
                     completed_at=row.completed_at,
                     input_summary=row.input_summary,
                     output_summary=row.output_summary,
+                )
+                for row in rows
+            ]
+
+    def add_oauth_token(self, token: OAuthToken) -> None:
+        with get_session(self.engine) as session:
+            session.add(
+                OAuthTokenModel(
+                    provider=token.provider,
+                    user_id=token.user_id,
+                    access_token=token.access_token,
+                    created_at=token.created_at,
+                )
+            )
+            session.commit()
+
+    def list_oauth_tokens(self, provider: str, user_id: str) -> List[OAuthToken]:
+        with get_session(self.engine) as session:
+            rows = (
+                session.execute(
+                    select(OAuthTokenModel).where(
+                        OAuthTokenModel.provider == provider,
+                        OAuthTokenModel.user_id == user_id,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                OAuthToken(
+                    provider=row.provider,
+                    user_id=row.user_id,
+                    access_token=row.access_token,
+                    created_at=row.created_at,
                 )
                 for row in rows
             ]

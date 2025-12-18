@@ -79,3 +79,7 @@ export const getAllPreferences = async (
 
 export const resetStore = async (): Promise<{ status: string }> =>
   request("/api/reset", { method: "DELETE" });
+
+export const getOAuthUrl = async (
+  provider: "github" | "gitlab"
+): Promise<{ url: string }> => request(`/api/auth/${provider}/login`);

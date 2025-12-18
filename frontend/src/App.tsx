@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import AgentTrace from "./components/AgentTrace";
 import DiffViewer from "./components/DiffViewer";
+import FileTree from "./components/FileTree";
+import ReviewDashboard from "./components/ReviewDashboard";
 import ReviewSummary from "./components/ReviewSummary";
 import Sidebar from "./components/Sidebar";
 import {
@@ -13,12 +15,15 @@ import {
   getPreferences,
   getReview,
   getOAuthUrl,
+  getSession,
+  getMessages,
   indexRepo,
   listReviews,
   listOAuthTokens,
   resetStore,
   submitFeedback
 } from "./api";
+import { parseDiff } from "./utils/diff";
 
 const App = () => {
   const [reviews, setReviews] = useState<ReviewStatus[]>([]);
@@ -41,6 +46,11 @@ const App = () => {
   const [authUser, setAuthUser] = useState<{ provider: "github" | "gitlab"; userId: string } | null>(null);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [tokenList, setTokenList] = useState<{ access_token: string; created_at: string }[]>([]);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [messages, setMessages] = useState<
+    { agent_id: string; message_type: string; timestamp: string; payload: Record<string, unknown> }[]
+  >([]);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
 
   const refreshReviews = async () => {
     const data = await listReviews();
@@ -59,11 +69,13 @@ const App = () => {
       setComments([]);
       setSelectedReview(null);
       setFeedbackSummary({ up: 0, down: 0, neutral: 0 });
+      setMessages([]);
       return;
     }
     void getComments(selectedReviewId).then(setComments);
     void getReview(selectedReviewId).then(setSelectedReview);
     void getFeedbackSummary(selectedReviewId).then(setFeedbackSummary);
+    void getMessages(selectedReviewId).then(setMessages);
   }, [selectedReviewId]);
 
   useEffect(() => {
@@ -73,6 +85,7 @@ const App = () => {
         void getComments(selectedReviewId).then(setComments);
         void getReview(selectedReviewId).then(setSelectedReview);
         void getFeedbackSummary(selectedReviewId).then(setFeedbackSummary);
+        void getMessages(selectedReviewId).then(setMessages);
       }
     }, 3000);
     return () => window.clearInterval(interval);
@@ -202,6 +215,27 @@ const App = () => {
     }
   };
 
+  const handleSessionToken = () => {
+    const token = window.prompt("Paste session token from callback response");
+    if (token) {
+      setSessionToken(token);
+      setAuthStatus("Session token stored");
+    }
+  };
+
+  useEffect(() => {
+    if (!sessionToken) {
+      return;
+    }
+    getSession(sessionToken)
+      .then((session) => {
+        setAuthStatus(`Session for ${session.user_id} (${session.provider})`);
+      })
+      .catch(() => {
+        setAuthStatus("Session invalid");
+      });
+  }, [sessionToken]);
+
   const handleTokenLookup = async () => {
     if (!authUser) {
       setAuthStatus("Set provider and user id first");
@@ -231,6 +265,9 @@ const App = () => {
           <button className="secondary" onClick={() => handleOAuth("gitlab")}>
             Connect GitLab
           </button>
+          <button className="secondary" onClick={handleSessionToken}>
+            Set Session Token
+          </button>
           <span className="status">{authStatus ?? ""}</span>
           <button className="secondary" onClick={handleReset}>
             Reset Demo
@@ -248,6 +285,14 @@ const App = () => {
       <div className="layout">
         <Sidebar reviews={reviews} selectedId={selectedReviewId} onSelect={setSelectedReviewId} />
         <main className="main">
+          <ReviewDashboard reviews={reviews} />
+          <div className="file-layout">
+            <FileTree
+              files={parseDiff((selectedReview?.metadata?.diff as string) ?? "")}
+              selectedFile={selectedFile}
+              onSelect={setSelectedFile}
+            />
+            <div className="file-main">
           <section className="card input-card">
             <div className="card-header">
               <h2>Paste Unified Diff</h2>
@@ -344,10 +389,13 @@ const App = () => {
             diffText={(selectedReview?.metadata?.diff as string) ?? ""}
             comments={comments}
             onFeedback={handleFeedback}
+            selectedFile={selectedFile}
           />
           <div className="panel-grid">
             <ReviewSummary comments={comments} feedback={feedbackSummary} />
-            <AgentTrace />
+            <AgentTrace messages={messages} />
+          </div>
+            </div>
           </div>
         </main>
       </div>

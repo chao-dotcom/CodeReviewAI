@@ -1,33 +1,31 @@
-const AgentTrace = () => {
+type AgentTraceProps = {
+  messages: { agent_id: string; message_type: string; timestamp: string; payload: Record<string, unknown> }[];
+};
+
+const AgentTrace = ({ messages }: AgentTraceProps) => {
   return (
     <section className="card">
       <div className="card-header">
         <h2>Agent Trace</h2>
         <span className="chip ghost">Live run</span>
       </div>
-      <ol className="trace">
-        <li>
-          <span className="trace-time">00:00.4s</span>
-          <div>
-            <strong>Code Reviewer</strong>
-            <p>2 findings, 1 suggestion for missing validation.</p>
-          </div>
-        </li>
-        <li>
-          <span className="trace-time">00:00.7s</span>
-          <div>
-            <strong>Security Reviewer</strong>
-            <p>Flagged potential secret exposure in config change.</p>
-          </div>
-        </li>
-        <li>
-          <span className="trace-time">00:01.0s</span>
-          <div>
-            <strong>Style Reviewer</strong>
-            <p>Line length warning on auth module.</p>
-          </div>
-        </li>
-      </ol>
+      {messages.length === 0 ? (
+        <p className="empty">No agent messages yet.</p>
+      ) : (
+        <ol className="trace">
+          {messages.map((message, index) => (
+            <li key={`${message.agent_id}-${index}`}>
+              <span className="trace-time">
+                {new Date(message.timestamp).toLocaleTimeString()}
+              </span>
+              <div>
+                <strong>{message.agent_id}</strong>
+                <p>{message.message_type}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
     </section>
   );
 };

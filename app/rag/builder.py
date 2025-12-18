@@ -38,3 +38,29 @@ def build_chunks(repo_path: str, include_globs: Iterable[str]) -> List[RagChunk]
             )
 
     return chunks
+
+
+def build_chunks_for_files(repo_path: str, files: Iterable[str]) -> List[RagChunk]:
+    root = Path(repo_path).resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"Repo path not found: {root}")
+    chunks: List[RagChunk] = []
+    for relative_path in files:
+        file_path = (root / relative_path).resolve()
+        if not file_path.exists() or not file_path.is_file():
+            continue
+        code = file_path.read_text(encoding="utf-8", errors="ignore")
+        for chunk in chunk_python_code(code):
+            chunk_id = f"{file_path}:{chunk.start_line}:{chunk.end_line}:{chunk.name}"
+            chunks.append(
+                RagChunk(
+                    chunk_id=chunk_id,
+                    content=chunk.code,
+                    metadata={
+                        "file": str(file_path.relative_to(root)),
+                        "name": chunk.name,
+                        "type": chunk.chunk_type,
+                    },
+                )
+            )
+    return chunks

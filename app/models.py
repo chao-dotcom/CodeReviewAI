@@ -112,3 +112,8 @@ class RagSearchRequest(BaseModel):
 class RagRepoIndexRequest(BaseModel):
     repo_path: str
     include_globs: List[str] = Field(default_factory=lambda: ["**/*.py"])
+
+
+class RagUpdateRequest(BaseModel):
+    repo_path: str
+    files: List[str]

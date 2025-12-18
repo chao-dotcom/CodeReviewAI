@@ -2,21 +2,23 @@ type DiffViewerProps = {
   diffText: string;
   comments: { id: string; file_path: string; line_number: number | null; content: string }[];
   onFeedback: (commentId: string, rating: number) => void;
+  selectedFile: string | null;
 };
 
-const DiffViewer = ({ diffText, comments, onFeedback }: DiffViewerProps) => {
+const DiffViewer = ({ diffText, comments, onFeedback, selectedFile }: DiffViewerProps) => {
   const lines = diffText.split(/\r?\n/);
   const grouped = comments.reduce<Record<string, typeof comments>>((acc, comment) => {
     acc[comment.file_path] ??= [];
     acc[comment.file_path].push(comment);
     return acc;
   }, {});
+  const filteredComments = selectedFile ? grouped[selectedFile] ?? [] : comments;
 
   return (
     <section className="card diff-card">
       <div className="card-header">
         <h2>Diff Viewer</h2>
-        <span className="chip ghost">{comments.length} comments</span>
+        <span className="chip ghost">{filteredComments.length} comments</span>
       </div>
       {diffText.trim() ? (
         <div className="diff-scroll">
@@ -39,10 +41,11 @@ const DiffViewer = ({ diffText, comments, onFeedback }: DiffViewerProps) => {
         <p className="empty">No diff loaded yet.</p>
       )}
       <div className="comment-list">
-        {comments.length === 0 ? (
+        {filteredComments.length === 0 ? (
           <p className="empty">No inline comments available.</p>
         ) : (
-          Object.entries(grouped).map(([filePath, fileComments]) => (
+          Object.entries(selectedFile ? { [selectedFile]: filteredComments } : grouped).map(
+            ([filePath, fileComments]) => (
             <div key={filePath} className="comment-group">
               <span className="chip">{filePath}</span>
               {fileComments.map((comment, index) => (
@@ -56,7 +59,7 @@ const DiffViewer = ({ diffText, comments, onFeedback }: DiffViewerProps) => {
                 </div>
               ))}
             </div>
-          ))
+          )
         )}
       </div>
     </section>

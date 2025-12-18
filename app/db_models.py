@@ -59,6 +59,17 @@ class TraceModel(Base):
     review: Mapped["ReviewModel"] = relationship("ReviewModel", back_populates="traces")
 
 
+class MessageModel(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_id: Mapped[str] = mapped_column(String(36), ForeignKey("reviews.id"))
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class FeedbackModel(Base):
     __tablename__ = "feedback"
 

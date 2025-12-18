@@ -25,5 +25,10 @@ Reviews:
 {reviews}
 
 Return JSON with:
-{{"findings":[{{"file_path":"", "line_number":0, "severity":"info", "category":"preference", "description":"", "suggestion":""}}]}}
+{{
+  "preferred_agent": "",
+  "rejected_agent": "",
+  "notes": "",
+  "findings":[{{"file_path":"", "line_number":0, "severity":"info", "category":"preference", "description":"", "suggestion":""}}]
+}}
 """.strip()

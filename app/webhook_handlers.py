@@ -33,6 +33,7 @@ async def handle_github_webhook(
         "action": action,
         "repo": data.get("repository", {}).get("full_name"),
         "pr_url": pr.get("html_url"),
+        "commit_id": pr.get("head", {}).get("sha"),
     }
 
     diff_text = ""
@@ -58,6 +59,7 @@ async def handle_gitlab_webhook(
         "action": data.get("object_attributes", {}).get("action"),
         "repo": data.get("project", {}).get("path_with_namespace"),
         "pr_url": data.get("object_attributes", {}).get("url"),
+        "commit_id": data.get("object_attributes", {}).get("last_commit", {}).get("id"),
     }
     review_id = await enqueue("", metadata)
     return {"status": "accepted", "review_id": str(review_id)}

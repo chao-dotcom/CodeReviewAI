@@ -29,3 +29,6 @@ class RagIndex:
             scored.append((score, chunk))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [chunk for score, chunk in scored[:limit] if score > 0]
+
+    def delete_by_file(self, file_path: str) -> None:
+        self._chunks = [chunk for chunk in self._chunks if chunk.metadata.get("file") != file_path]

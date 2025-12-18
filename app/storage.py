@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import Dict, List
 from uuid import UUID, uuid4
 
-from app.models import AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
+from app.crypto import TokenCipher
+from app.models import AgentMessage, AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
 
 
 class InMemoryStore:
@@ -12,8 +13,10 @@ class InMemoryStore:
         self.reviews: Dict[UUID, ReviewStatus] = {}
         self.comments: Dict[UUID, List[Comment]] = {}
         self.traces: Dict[UUID, List[AgentTrace]] = {}
+        self.messages: Dict[UUID, List[AgentMessage]] = {}
         self.feedback: Dict[UUID, List[FeedbackEntry]] = {}
         self.tokens: List[OAuthToken] = []
+        self._cipher = TokenCipher()
 
     def create_review(self, metadata: dict | None = None) -> ReviewStatus:
         now = datetime.utcnow()
@@ -27,6 +30,7 @@ class InMemoryStore:
         self.reviews[review.id] = review
         self.comments[review.id] = []
         self.traces[review.id] = []
+        self.messages[review.id] = []
         self.feedback[review.id] = []
         return review
 
@@ -59,6 +63,10 @@ class InMemoryStore:
     def add_traces(self, review_id: UUID, new_traces: List[AgentTrace]) -> None:
         self.traces.setdefault(review_id, [])
         self.traces[review_id].extend(new_traces)
+
+    def add_messages(self, review_id: UUID, new_messages: List[AgentMessage]) -> None:
+        self.messages.setdefault(review_id, [])
+        self.messages[review_id].extend(new_messages)
 
     def get_result(self, review_id: UUID) -> ReviewResult:
         return ReviewResult(
@@ -97,14 +105,41 @@ class InMemoryStore:
     def get_traces(self, review_id: UUID) -> List[AgentTrace]:
         return self.traces.get(review_id, [])
 
+    def get_messages(self, review_id: UUID) -> List[AgentMessage]:
+        return self.messages.get(review_id, [])
+
     def list_traces_by_agent(self, agent_id: str) -> List[AgentTrace]:
         traces: List[AgentTrace] = []
         for review_traces in self.traces.values():
             traces.extend([trace for trace in review_traces if trace.agent_id == agent_id])
         return traces
 
+    def list_messages_by_agent(self, agent_id: str) -> List[AgentMessage]:
+        messages: List[AgentMessage] = []
+        for review_messages in self.messages.values():
+            messages.extend([msg for msg in review_messages if msg.agent_id == agent_id])
+        return messages
+
     def add_oauth_token(self, token: OAuthToken) -> None:
-        self.tokens.append(token)
+        encrypted = OAuthToken(
+            provider=token.provider,
+            user_id=token.user_id,
+            access_token=self._cipher.encrypt(token.access_token),
+            created_at=token.created_at,
+        )
+        self.tokens.append(encrypted)
 
     def list_oauth_tokens(self, provider: str, user_id: str) -> List[OAuthToken]:
-        return [t for t in self.tokens if t.provider == provider and t.user_id == user_id]
+        result = []
+        for token in self.tokens:
+            if token.provider != provider or token.user_id != user_id:
+                continue
+            result.append(
+                OAuthToken(
+                    provider=token.provider,
+                    user_id=token.user_id,
+                    access_token=self._cipher.decrypt(token.access_token),
+                    created_at=token.created_at,
+                )
+            )
+        return result

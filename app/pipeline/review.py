@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 from uuid import UUID
 
 from app.agents.orchestrator import AgentOrchestrator
 from app.config import settings
-from app.models import AgentTrace, Comment
+from app.models import AgentMessage, AgentTrace, Comment
 from app.pipeline.diff_parser import parse_diff
 from app.rag.index import RagChunk
 
@@ -35,14 +36,34 @@ AGENTS = [
 ]
 
 
+def _aggregate_findings(
+    findings: List[Tuple[str, object]]
+) -> List[Tuple[str, object, List[str]]]:
+    grouped: Dict[Tuple[str, int | None, str], dict] = defaultdict(dict)
+    for agent_id, finding in findings:
+        key = (finding.file_path, finding.line_number, finding.description)
+        if key not in grouped:
+            grouped[key] = {"finding": finding, "agents": [agent_id]}
+        else:
+            grouped[key]["agents"].append(agent_id)
+            existing = grouped[key]["finding"]
+            severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+            if severity_order.get(finding.severity, 0) > severity_order.get(
+                existing.severity, 0
+            ):
+                grouped[key]["finding"] = finding
+    return [(group["agents"][0], group["finding"], group["agents"]) for group in grouped.values()]
+
+
 def run_review_pipeline(
     review_id: UUID, diff_text: str, rag_index: object | None = None
-) -> Tuple[List[Comment], List[AgentTrace]]:
+) -> Tuple[List[Comment], List[AgentTrace], List[AgentMessage]]:
     if settings.use_langgraph:
         try:
             from app.orchestration.graph import run_graph
 
-            return run_graph(diff_text, review_id)
+            comments, traces, messages = run_graph(diff_text, review_id)
+            return comments, traces, messages
         except Exception:
             pass
     changes = parse_diff(diff_text)
@@ -55,7 +76,9 @@ def run_review_pipeline(
 
     result = orchestrator.run(changes, rag_context)
     comments: List[Comment] = []
-    for agent_id, finding in result.findings:
+    messages: List[AgentMessage] = []
+    aggregated = _aggregate_findings(result.findings)
+    for agent_id, finding, agents in aggregated:
         comments.append(
             Comment(
                 review_id=review_id,
@@ -64,7 +87,11 @@ def run_review_pipeline(
                 line_number=finding.line_number,
                 severity=finding.severity,
                 content=finding.description,
-                metadata={"category": finding.category, "suggestion": finding.suggestion},
+                metadata={
+                    "category": finding.category,
+                    "suggestion": finding.suggestion,
+                    "agents": agents,
+                },
             )
         )
 
@@ -79,4 +106,17 @@ def run_review_pipeline(
             )
         )
 
-    return comments, result.traces
+    for trace in result.traces:
+        messages.append(
+            AgentMessage(
+                agent_id=trace.agent_id,
+                message_type="trace",
+                timestamp=datetime.utcnow(),
+                payload={
+                    "input": trace.input_summary,
+                    "output": trace.output_summary,
+                },
+            )
+        )
+
+    return comments, result.traces, messages

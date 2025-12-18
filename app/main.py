@@ -3,12 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+import logging
+from time import perf_counter
+
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import (
     AgentInfo,
+    AgentMessage,
     AgentTrace,
     Comment,
     FeedbackEntry,
@@ -19,10 +23,12 @@ from app.models import (
     RagIndexRequest,
     RagRepoIndexRequest,
     RagSearchRequest,
+    RagUpdateRequest,
     ReviewRequest,
     ReviewResult,
     ReviewStatus,
 )
+from app.preference import generate_preference_pairs
 from app.auth import require_api_key
 from app.config import settings
 from app.pipeline.review import AGENTS, run_review_pipeline
@@ -32,13 +38,21 @@ from app.rag.service import RagService
 from app.rag.builder import build_chunks
 from app.storage import InMemoryStore
 from app.storage_sql import SqlStore
-from app.integrations.github import build_summary, post_pr_comment
+from app.integrations.github import build_summary, create_check_run, post_pr_comment, post_review_comments
+from app.integrations.gitlab import post_mr_comment, post_mr_inline_comments, set_commit_status
 from app.webhook_handlers import handle_github_webhook, handle_gitlab_webhook
+from app.rate_limit import RateLimiter
+from app.sessions import SessionStore
 from app.webhooks import verify_github_signature, verify_gitlab_token
 
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("codereview")
+
 app = FastAPI(title="Agentic Code Review API", version="0.1.0")
 store = SqlStore(settings.database_url) if settings.use_database else InMemoryStore()
+rate_limiter = RateLimiter(settings.rate_limit_per_hour) if settings.rate_limit_per_hour > 0 else None
+sessions = SessionStore(settings.session_ttl_hours)
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +61,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    if rate_limiter is not None:
+        key = request.headers.get("x-api-key") or request.client.host or "anonymous"
+        if not rate_limiter.allow(key):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    start = perf_counter()
+    response = await call_next(request)
+    duration_ms = int((perf_counter() - start) * 1000)
+    logger.info("%s %s %s %sms", request.method, request.url.path, response.status_code, duration_ms)
+    return response
+
+
+@app.get("/health")
+def health_check() -> dict:
+    return {"status": "ok"}
 
 
 @app.on_event("startup")
@@ -58,16 +90,45 @@ async def start_workers() -> None:
         async def handle_job(job: ReviewJob) -> None:
             store.mark_in_progress(job.review_id)
             try:
-                comments, traces = run_review_pipeline(
+                comments, traces, messages = run_review_pipeline(
                     job.review_id, job.diff_text, rag_index=app.state.rag_index
                 )
                 store.add_comments(job.review_id, comments)
                 store.add_traces(job.review_id, traces)
+                store.add_messages(job.review_id, messages)
                 store.complete_review(job.review_id)
                 review = store.get_review(job.review_id)
                 pr_url = review.metadata.get("pr_url")
                 if pr_url and settings.github_token:
+                    commit_id = review.metadata.get("commit_id")
                     post_pr_comment(pr_url, build_summary(comments), settings.github_token)
+                    post_review_comments(
+                        pr_url,
+                        "Inline review comments",
+                        comments,
+                        settings.github_token,
+                        commit_id=commit_id,
+                    )
+                    if commit_id:
+                        create_check_run(
+                            pr_url,
+                            commit_id,
+                            "AI Code Review",
+                            build_summary(comments),
+                            settings.github_token,
+                        )
+                if pr_url and settings.gitlab_token:
+                    commit_id = review.metadata.get("commit_id")
+                    post_mr_comment(pr_url, build_summary(comments), settings.gitlab_token)
+                    post_mr_inline_comments(pr_url, comments, settings.gitlab_token, commit_id=commit_id)
+                    if commit_id:
+                        set_commit_status(
+                            pr_url,
+                            commit_id,
+                            "success",
+                            "AI review completed",
+                            settings.gitlab_token,
+                        )
             except Exception as exc:
                 store.mark_failed(job.review_id, str(exc))
 
@@ -109,6 +170,14 @@ def list_reviews() -> list[ReviewStatus]:
 def get_review_comments(review_id: UUID) -> list[Comment]:
     try:
         return store.get_comments(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+
+@app.get("/api/reviews/{review_id}/messages", response_model=list[AgentMessage])
+def get_review_messages(review_id: UUID) -> list[AgentMessage]:
+    try:
+        return store.get_messages(review_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Review not found")
 
@@ -195,6 +264,46 @@ def export_preferences(review_id: UUID, limit: int = 20) -> list[PreferencePair]
     return _build_preferences(review_id, limit)
 
 
+@app.get("/api/reviews/{review_id}/preferences/auto", response_model=list[PreferencePair])
+def export_auto_preferences(review_id: UUID) -> list[PreferencePair]:
+    try:
+        review = store.get_review(review_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Review not found")
+    diff_text = review.metadata.get("diff", "")
+    pairs = generate_preference_pairs(diff_text)
+    prompt = f"Review this code diff:\n\n{diff_text}".strip()
+    return [
+        PreferencePair(
+            review_id=review_id,
+            prompt=prompt,
+            chosen=chosen,
+            rejected=rejected,
+        )
+        for chosen, rejected in pairs
+    ]
+
+
+@app.get("/api/preferences/auto", response_model=list[PreferencePair])
+def export_all_auto_preferences(limit: int = 200) -> list[PreferencePair]:
+    pairs: list[PreferencePair] = []
+    for review in store.list_reviews():
+        diff_text = review.metadata.get("diff", "")
+        prompt = f"Review this code diff:\n\n{diff_text}".strip()
+        for chosen, rejected in generate_preference_pairs(diff_text):
+            pairs.append(
+                PreferencePair(
+                    review_id=review.id,
+                    prompt=prompt,
+                    chosen=chosen,
+                    rejected=rejected,
+                )
+            )
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
+
+
 @app.get("/api/preferences", response_model=list[PreferencePair])
 def export_all_preferences(limit: int = 200) -> list[PreferencePair]:
     pairs: list[PreferencePair] = []
@@ -211,6 +320,7 @@ def reset_store(_user: str = Depends(require_api_key)) -> dict:
         store.reviews.clear()
         store.comments.clear()
         store.traces.clear()
+        store.messages.clear()
         store.feedback.clear()
         app.state.rag_index = RagService()
         return {"status": "reset"}
@@ -230,6 +340,11 @@ def list_oauth_tokens(provider: str, user_id: str) -> list[OAuthToken]:
 @app.get("/api/agents/{agent_id}/trace", response_model=list[AgentTrace])
 def get_agent_trace(agent_id: str) -> list[AgentTrace]:
     return store.list_traces_by_agent(agent_id)
+
+
+@app.get("/api/agents/{agent_id}/messages", response_model=list[AgentMessage])
+def get_agent_messages(agent_id: str) -> list[AgentMessage]:
+    return store.list_messages_by_agent(agent_id)
 
 
 @app.post("/api/rag/index")
@@ -254,6 +369,15 @@ def index_rag_repo(request: RagRepoIndexRequest) -> dict:
 def search_rag(request: RagSearchRequest) -> list[dict]:
     results = app.state.rag_index.query(request.query, limit=request.limit)
     return [{"chunk_id": chunk.chunk_id, "content": chunk.content, "metadata": chunk.metadata} for chunk in results]
+
+
+@app.post("/api/rag/update")
+def update_rag(request: RagUpdateRequest) -> dict:
+    try:
+        count = app.state.rag_index.update_files(request.repo_path, request.files)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "updated", "count": count}
 
 
 @app.get("/api/auth/github/login")
@@ -305,7 +429,12 @@ def github_callback(code: str, state: str) -> dict:
             created_at=datetime.utcnow(),
         )
     )
-    return {"status": "connected", "user": {"id": user.get("id"), "login": user.get("login")}}
+    session_token = sessions.create(str(user.get("id")), "github")
+    return {
+        "status": "connected",
+        "user": {"id": user.get("id"), "login": user.get("login")},
+        "session_token": session_token,
+    }
 
 
 @app.get("/api/auth/gitlab/login")
@@ -357,7 +486,22 @@ def gitlab_callback(code: str, state: str) -> dict:
             created_at=datetime.utcnow(),
         )
     )
-    return {"status": "connected", "user": {"id": user.get("id"), "username": user.get("username")}}
+    session_token = sessions.create(str(user.get("id")), "gitlab")
+    return {
+        "status": "connected",
+        "user": {"id": user.get("id"), "username": user.get("username")},
+        "session_token": session_token,
+    }
+
+
+@app.get("/api/auth/session")
+def get_session(x_session_token: str | None = Header(default=None)) -> dict:
+    if not x_session_token:
+        raise HTTPException(status_code=401, detail="Missing session token")
+    session = sessions.get(x_session_token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return session
 
 
 @app.post("/api/webhooks/github")

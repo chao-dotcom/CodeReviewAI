@@ -28,3 +28,6 @@ class ChromaStore:
             metadata = results.get("metadatas", [[]])[0][index]
             chunks.append(RagChunk(chunk_id=chunk_id, content=content, metadata=metadata))
         return chunks
+
+    def delete_by_file(self, file_path: str) -> None:
+        self.collection.delete(where={"file": file_path})

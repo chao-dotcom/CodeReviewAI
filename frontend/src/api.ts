@@ -84,6 +84,14 @@ export const getOAuthUrl = async (
   provider: "github" | "gitlab"
 ): Promise<{ url: string }> => request(`/api/auth/${provider}/login`);
 
+export const getMessages = async (
+  reviewId: string
+): Promise<{ agent_id: string; message_type: string; timestamp: string; payload: Record<string, unknown> }[]> =>
+  request(`/api/reviews/${reviewId}/messages`);
+
+export const getSession = async (token: string): Promise<{ user_id: string; provider: string }> =>
+  request("/api/auth/session", { headers: { "X-Session-Token": token } });
+
 export const listOAuthTokens = async (
   provider: "github" | "gitlab",
   userId: string

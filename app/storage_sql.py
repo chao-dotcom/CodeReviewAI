@@ -7,14 +7,16 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 
 from app.db import build_engine, get_session, init_db
-from app.db_models import CommentModel, FeedbackModel, OAuthTokenModel, ReviewModel, TraceModel
-from app.models import AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
+from app.crypto import TokenCipher
+from app.db_models import CommentModel, FeedbackModel, MessageModel, OAuthTokenModel, ReviewModel, TraceModel
+from app.models import AgentMessage, AgentTrace, Comment, FeedbackEntry, OAuthToken, ReviewResult, ReviewStatus
 
 
 class SqlStore:
     def __init__(self, database_url: str) -> None:
         self.engine = build_engine(database_url)
         init_db(self.engine)
+        self._cipher = TokenCipher()
 
     def create_review(self, metadata: dict | None = None) -> ReviewStatus:
         now = datetime.utcnow()
@@ -94,6 +96,20 @@ class SqlStore:
                         completed_at=trace.completed_at,
                         input_summary=trace.input_summary,
                         output_summary=trace.output_summary,
+                    )
+                )
+            session.commit()
+
+    def add_messages(self, review_id: UUID, new_messages: List[AgentMessage]) -> None:
+        with get_session(self.engine) as session:
+            for message in new_messages:
+                session.add(
+                    MessageModel(
+                        review_id=str(review_id),
+                        agent_id=message.agent_id,
+                        message_type=message.message_type,
+                        timestamp=message.timestamp,
+                        payload=message.payload,
                     )
                 )
             session.commit()
@@ -210,6 +226,23 @@ class SqlStore:
                 for row in rows
             ]
 
+    def get_messages(self, review_id: UUID) -> List[AgentMessage]:
+        with get_session(self.engine) as session:
+            rows = (
+                session.execute(select(MessageModel).where(MessageModel.review_id == str(review_id)))
+                .scalars()
+                .all()
+            )
+            return [
+                AgentMessage(
+                    agent_id=row.agent_id,
+                    message_type=row.message_type,
+                    timestamp=row.timestamp,
+                    payload=row.payload or {},
+                )
+                for row in rows
+            ]
+
     def list_traces_by_agent(self, agent_id: str) -> List[AgentTrace]:
         with get_session(self.engine) as session:
             rows = (
@@ -228,13 +261,30 @@ class SqlStore:
                 for row in rows
             ]
 
+    def list_messages_by_agent(self, agent_id: str) -> List[AgentMessage]:
+        with get_session(self.engine) as session:
+            rows = (
+                session.execute(select(MessageModel).where(MessageModel.agent_id == agent_id))
+                .scalars()
+                .all()
+            )
+            return [
+                AgentMessage(
+                    agent_id=row.agent_id,
+                    message_type=row.message_type,
+                    timestamp=row.timestamp,
+                    payload=row.payload or {},
+                )
+                for row in rows
+            ]
+
     def add_oauth_token(self, token: OAuthToken) -> None:
         with get_session(self.engine) as session:
             session.add(
                 OAuthTokenModel(
                     provider=token.provider,
                     user_id=token.user_id,
-                    access_token=token.access_token,
+                    access_token=self._cipher.encrypt(token.access_token),
                     created_at=token.created_at,
                 )
             )
@@ -256,7 +306,7 @@ class SqlStore:
                 OAuthToken(
                     provider=row.provider,
                     user_id=row.user_id,
-                    access_token=row.access_token,
+                    access_token=self._cipher.decrypt(row.access_token),
                     created_at=row.created_at,
                 )
                 for row in rows

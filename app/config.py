@@ -32,6 +32,17 @@ class Settings:
         self.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "256"))
         self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
         self.use_langgraph = os.getenv("USE_LANGGRAPH", "0") == "1"
+        self.llm_device = os.getenv("LLM_DEVICE", "cpu")
+        self.llm_adapter_path = os.getenv("LLM_ADAPTER_PATH", "")
+        self.llm_adapter_type = os.getenv("LLM_ADAPTER_TYPE", "lora")
+        self.llm_cache_size = int(os.getenv("LLM_CACHE_SIZE", "256"))
+        self.token_encryption_key = os.getenv("TOKEN_ENCRYPTION_KEY", "")
+        self.rate_limit_per_hour = int(os.getenv("RATE_LIMIT_PER_HOUR", "0"))
+        self.llm_quantization = os.getenv("LLM_QUANTIZATION", "none")
+        self.llm_batch_size = int(os.getenv("LLM_BATCH_SIZE", "4"))
+        self.llm_cache_redis_url = os.getenv("LLM_CACHE_REDIS_URL", "")
+        self.session_cookie_name = os.getenv("SESSION_COOKIE_NAME", "cr_session")
+        self.session_ttl_hours = int(os.getenv("SESSION_TTL_HOURS", "24"))
 
 
 settings = Settings()

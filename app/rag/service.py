@@ -39,3 +39,16 @@ class RagService:
         from app.rag.builder import build_chunks
 
         return build_chunks(repo_path, include_globs)
+
+    def update_files(self, repo_path: str, files: Iterable[str]) -> int:
+        from app.rag.builder import build_chunks_for_files
+
+        chunks = build_chunks_for_files(repo_path, files)
+        seen_files = {chunk.metadata.get("file") for chunk in chunks if chunk.metadata.get("file")}
+        for file_path in seen_files:
+            if self.use_chroma:
+                self.store.delete_by_file(file_path)
+            else:
+                self.store.delete_by_file(file_path)
+        self.add_chunks(chunks)
+        return len(chunks)

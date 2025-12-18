@@ -5,6 +5,7 @@ from typing import List, Tuple
 from uuid import UUID
 
 from app.agents.orchestrator import AgentOrchestrator
+from app.config import settings
 from app.models import AgentTrace, Comment
 from app.pipeline.diff_parser import parse_diff
 from app.rag.index import RagChunk
@@ -37,6 +38,13 @@ AGENTS = [
 def run_review_pipeline(
     review_id: UUID, diff_text: str, rag_index: object | None = None
 ) -> Tuple[List[Comment], List[AgentTrace]]:
+    if settings.use_langgraph:
+        try:
+            from app.orchestration.graph import run_graph
+
+            return run_graph(diff_text, review_id)
+        except Exception:
+            pass
     changes = parse_diff(diff_text)
     orchestrator = AgentOrchestrator()
     rag_context = ""

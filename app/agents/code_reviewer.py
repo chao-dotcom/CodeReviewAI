@@ -12,6 +12,14 @@ class CodeReviewerAgent(ReviewAgent):
     description = "High-level review for logic and maintainability."
 
     def analyze(self, changes: List[DiffChange], context: str) -> List[AgentFinding]:
+        if hasattr(self, "analyze_with_llm"):
+            llm_findings = self.analyze_with_llm(
+                "\n".join(change.content for change in changes),
+                context,
+                "code reviewer",
+            )
+            if llm_findings:
+                return llm_findings
         findings: List[AgentFinding] = []
         for change in changes:
             content = change.content.strip()

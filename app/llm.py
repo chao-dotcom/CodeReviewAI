@@ -30,6 +30,8 @@ class LLMClient:
         )
 
     def generate(self, prompt: str) -> str:
+        if self.backend == "disabled":
+            return ""
         if self.backend != "local":
             return ""
         self._load_local()

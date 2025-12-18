@@ -31,6 +31,7 @@ class Settings:
         self.llm_model = os.getenv("LLM_MODEL", "gpt2")
         self.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "256"))
         self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+        self.use_langgraph = os.getenv("USE_LANGGRAPH", "0") == "1"
 
 
 settings = Settings()

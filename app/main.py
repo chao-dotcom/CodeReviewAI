@@ -32,6 +32,7 @@ from app.rag.service import RagService
 from app.rag.builder import build_chunks
 from app.storage import InMemoryStore
 from app.storage_sql import SqlStore
+from app.integrations.github import build_summary, post_pr_comment
 from app.webhook_handlers import handle_github_webhook, handle_gitlab_webhook
 from app.webhooks import verify_github_signature, verify_gitlab_token
 
@@ -63,6 +64,10 @@ async def start_workers() -> None:
                 store.add_comments(job.review_id, comments)
                 store.add_traces(job.review_id, traces)
                 store.complete_review(job.review_id)
+                review = store.get_review(job.review_id)
+                pr_url = review.metadata.get("pr_url")
+                if pr_url and settings.github_token:
+                    post_pr_comment(pr_url, build_summary(comments), settings.github_token)
             except Exception as exc:
                 store.mark_failed(job.review_id, str(exc))
 

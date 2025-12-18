@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.celery_app import celery_app
 from app.config import settings
+from app.integrations.github import build_summary, post_pr_comment
 from app.pipeline.review import run_review_pipeline
 from app.rag.service import RagService
 from app.storage_sql import SqlStore
@@ -20,5 +21,9 @@ def process_review(review_id: str, diff_text: str) -> None:
         store.add_comments(review_uuid, comments)
         store.add_traces(review_uuid, traces)
         store.complete_review(review_uuid)
+        review = store.get_review(review_uuid)
+        pr_url = review.metadata.get("pr_url")
+        if pr_url and settings.github_token:
+            post_pr_comment(pr_url, build_summary(comments), settings.github_token)
     except Exception as exc:
         store.mark_failed(review_uuid, str(exc))

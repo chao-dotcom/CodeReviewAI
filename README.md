@@ -20,3 +20,6 @@ Training
 OAuth (optional)
 - GitHub: set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
 - GitLab: set `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET`, `GITLAB_REDIRECT_URI`
+
+GitHub PR comments (optional)
+- Set `GITHUB_TOKEN` to enable posting review summaries back to PRs.

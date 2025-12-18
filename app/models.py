@@ -73,6 +73,13 @@ class OAuthToken(BaseModel):
     created_at: datetime
 
 
+class AgentMessage(BaseModel):
+    agent_id: str
+    message_type: str
+    timestamp: datetime
+    payload: Dict[str, Any]
+
+
 class AgentInfo(BaseModel):
     id: str
     name: str
